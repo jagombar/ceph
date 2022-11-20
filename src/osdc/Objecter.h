@@ -53,7 +53,6 @@
 #include "common/config_obs.h"
 #include "common/shunique_lock.h"
 #include "common/snap_types.h" // for class SnapContext
-#include "common/zipkin_trace.h"
 #include "common/tracer.h"
 #include "common/Throttle.h"
 #include "crush/crush.h" // for CRUSH_ITEM_NONE
@@ -1713,7 +1712,6 @@ public:
   // people sometimes depend on this.
   boost::asio::strand<boost::asio::io_context::executor_type>
       finish_strand{service.get_executor()};
-  ZTracer::Endpoint trace_endpoint{"0.0.0.0", 0, "Objecter"};
 private:
   std::unique_ptr<OSDMap> osdmap{std::make_unique<OSDMap>()};
 public:
@@ -2051,7 +2049,7 @@ public:
     int *data_offset;
 
     osd_reqid_t reqid; // explicitly setting reqid
-    ZTracer::Trace trace;
+    jspan_ptr trace = ::tracing::Tracer::noop_span;
     std::uint64_t subsystem = 0;
     const jspan_context* otel_trace = nullptr;
 
@@ -2084,7 +2082,7 @@ public:
 
     Op(const object_t& o, const object_locator_t& ol,  osdc_opvec&& _ops,
        int f, OpComp fin, version_t *ov, int *offset = nullptr,
-       ZTracer::Trace *parent_trace = nullptr, uint64_t subsystem = 0) :
+       const jspan_ptr& trace = ::tracing::Tracer::noop_span, uint64_t subsystem = 0) :
       target(o, ol, f),
       ops(std::move(_ops)),
       out_bl(ops.size(), nullptr),
@@ -2093,18 +2091,15 @@ public:
       out_ec(ops.size(), nullptr),
       onfinish(std::move(fin)),
       objver(ov),
-      data_offset(offset), subsystem(subsystem) {
+      data_offset(offset), trace(trace), subsystem(subsystem) {
       if (target.base_oloc.key == o)
 	target.base_oloc.key.clear();
-      if (parent_trace && parent_trace->valid()) {
-        trace.init("op", nullptr, parent_trace);
-        trace.event("start");
-      }
+      trace->AddEvent("start");
     }
 
     Op(const object_t& o, const object_locator_t& ol, osdc_opvec&& _ops,
        int f, Context* fin, version_t *ov, int *offset = nullptr,
-       ZTracer::Trace *parent_trace = nullptr, const jspan_context *otel_trace = nullptr,
+       const jspan_ptr& trace = ::tracing::Tracer::noop_span,
        uint64_t subsystem = 0) :
       target(o, ol, f),
       ops(std::move(_ops)),
@@ -2115,14 +2110,11 @@ public:
       onfinish(fin),
       objver(ov),
       data_offset(offset),
-      subsystem(subsystem),
-      otel_trace(otel_trace) {
+      trace(trace),
+      subsystem(subsystem) {
       if (target.base_oloc.key == o)
 	target.base_oloc.key.clear();
-      if (parent_trace && parent_trace->valid()) {
-        trace.init("op", nullptr, parent_trace);
-        trace.event("start");
-      }
+      trace->AddEvent("start");
     }
 
     bool operator<(const Op& other) const {
@@ -2151,7 +2143,8 @@ public:
 
   private:
     ~Op() override {
-      trace.event("finish");
+      trace->AddEvent("finish");
+      trace->End();
     }
   };
 
@@ -3060,11 +3053,11 @@ public:
     ceph::real_time mtime, int flags,
     Context *oncommit, version_t *objver = NULL,
     osd_reqid_t reqid = osd_reqid_t(),
-    ZTracer::Trace *parent_trace = nullptr,
-    const jspan_context *otel_trace = nullptr) {
+    const jspan_context& otel_ctx = {false, false}) {
+    auto trace = tracer.add_span("Op", otel_ctx);
     Op *o = new Op(oid, oloc, std::move(op.ops), flags | global_op_flags |
 		   CEPH_OSD_FLAG_WRITE, oncommit, objver,
-		   nullptr, nullptr, otel_trace);
+		   nullptr, trace);
     o->priority = op.priority;
     o->mtime = mtime;
     o->snapc = snapc;
@@ -3089,15 +3082,16 @@ public:
     return tid;
   }
 
-  void mutate(const object_t& oid, const object_locator_t& oloc,
-	      ObjectOperation&& op, const SnapContext& snapc,
-	      ceph::real_time mtime, int flags,
-	      Op::OpComp oncommit,
-	      version_t *objver = NULL, osd_reqid_t reqid = osd_reqid_t(),
-	      ZTracer::Trace *parent_trace = nullptr, uint32_t subsystem = 0) {
+  ceph_tid_t mutate(const object_t& oid, const object_locator_t& oloc,
+        ObjectOperation&& op, const SnapContext& snapc,
+        ceph::real_time mtime, int flags,
+        Op::OpComp oncommit,
+        version_t *objver = NULL, osd_reqid_t reqid = osd_reqid_t(),
+        const jspan_context& otel_ctx = {false, false}, uint32_t subsystem = 0) {
+    auto trace = tracer.add_span("Op", otel_ctx);
     Op *o = new Op(oid, oloc, std::move(op.ops), flags | global_op_flags |
-		   CEPH_OSD_FLAG_WRITE, std::move(oncommit), objver,
-		   nullptr, parent_trace, subsystem);
+     CEPH_OSD_FLAG_WRITE, std::move(oncommit), objver,
+     nullptr, trace, subsystem);
     o->priority = op.priority;
     o->mtime = mtime;
     o->snapc = snapc;
@@ -3107,7 +3101,9 @@ public:
     o->out_ec.swap(op.out_ec);
     o->reqid = reqid;
     op.clear();
-    op_submit(o);
+    ceph_tid_t tid;
+    op_submit(o, &tid);
+    return tid;
   }
 
   Op *prepare_read_op(
@@ -3118,9 +3114,10 @@ public:
     Context *onack, version_t *objver = NULL,
     int *data_offset = NULL,
     uint64_t features = 0,
-    ZTracer::Trace *parent_trace = nullptr) {
+    const jspan_context& otel_ctx = {false, false}) {
+    auto trace = tracer.add_span("Op", otel_ctx);
     Op *o = new Op(oid, oloc, std::move(op.ops), get_read_flags(flags) & flags_mask, onack, objver,
-		   data_offset, parent_trace);
+     data_offset, trace);
     o->priority = op.priority;
     o->snapid = snapid;
     o->outbl = pbl;
@@ -3150,14 +3147,15 @@ public:
   }
 
   void read(const object_t& oid, const object_locator_t& oloc,
-	    ObjectOperation&& op, snapid_t snapid, ceph::buffer::list *pbl,
-	    int flags, Op::OpComp onack,
-	    version_t *objver = nullptr, int *data_offset = nullptr,
-	    uint64_t features = 0, ZTracer::Trace *parent_trace = nullptr,
-	    uint64_t subsystem = 0) {
+     ObjectOperation&& op, snapid_t snapid, ceph::buffer::list *pbl,
+     int flags, Op::OpComp onack,
+     version_t *objver = nullptr, int *data_offset = nullptr,
+     uint64_t features = 0, const jspan_context& otel_ctx = {false, false},
+     uint64_t subsystem = 0) {
+    auto trace = tracer.add_span("Op", otel_ctx);
     Op *o = new Op(oid, oloc, std::move(op.ops), get_read_flags(flags),
-		   std::move(onack), objver,
-		   data_offset, parent_trace, subsystem);
+     std::move(onack), objver,
+     data_offset, trace, subsystem);
     o->priority = op.priority;
     o->snapid = snapid;
     o->outbl = pbl;
@@ -3354,7 +3352,8 @@ public:
     uint64_t off, uint64_t len, snapid_t snap, ceph::buffer::list *pbl,
     int flags, Context *onfinish, version_t *objver = NULL,
     ObjectOperation *extra_ops = NULL, int op_flags = 0,
-    ZTracer::Trace *parent_trace = nullptr) {
+    const jspan_context& otel_ctx = {false, false}) {
+    auto trace = tracer.add_span("Op", otel_ctx);
     osdc_opvec ops;
     int i = init_ops(ops, 1, extra_ops);
     ops[i].op.op = CEPH_OSD_OP_READ;
@@ -3364,7 +3363,7 @@ public:
     ops[i].op.extent.truncate_seq = 0;
     ops[i].op.flags = op_flags;
     Op *o = new Op(oid, oloc, std::move(ops), get_read_flags(flags), onfinish, objver,
-		   nullptr, parent_trace);
+		   nullptr, trace);
     o->snapid = snap;
     o->outbl = pbl;
     return o;
@@ -3516,7 +3515,8 @@ public:
     const ceph::buffer::list &bl, ceph::real_time mtime, int flags,
     Context *oncommit, version_t *objver = NULL,
     ObjectOperation *extra_ops = NULL, int op_flags = 0,
-    ZTracer::Trace *parent_trace = nullptr) {
+    const jspan_context& otel_ctx = {false, false}) {
+    auto trace = tracer.add_span("Op", otel_ctx);
     osdc_opvec ops;
     int i = init_ops(ops, 1, extra_ops);
     ops[i].op.op = CEPH_OSD_OP_WRITE;
@@ -3528,7 +3528,7 @@ public:
     ops[i].op.flags = op_flags;
     Op *o = new Op(oid, oloc, std::move(ops), flags | global_op_flags |
 		   CEPH_OSD_FLAG_WRITE, std::move(oncommit), objver,
-                   nullptr, parent_trace);
+                   nullptr, trace);
     o->mtime = mtime;
     o->snapc = snapc;
     return o;
@@ -4061,6 +4061,8 @@ private:
   epoch_t epoch_barrier = 0;
   bool retry_writes_after_first_reply =
     cct->_conf->objecter_retry_writes_after_first_reply;
+
+  tracing::Tracer tracer{cct, "io.ceph.Objecter"};
 
 public:
   void set_epoch_barrier(epoch_t epoch);
