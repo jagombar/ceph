@@ -33,11 +33,11 @@ void ShutDownCryptoRequest<I>::send() {
 
 template <typename I>
 void ShutDownCryptoRequest<I>::shut_down_object_dispatch() {
-  if (!m_image_ctx->io_object_dispatcher->exists(
-          io::OBJECT_DISPATCH_LAYER_CRYPTO)) {
-    finish(0);
-    return;
-  }
+//  if (!m_image_ctx->io_object_dispatcher->jexists(
+//          io::OBJECT_DISPATCH_LAYER_CRYPTO)) {
+//    finish(0);
+//    return;
+//  }
 
   auto ctx = create_context_callback<
           ShutDownCryptoRequest<I>,

@@ -59,7 +59,7 @@ struct TestMockShutDownCryptoRequest : public TestMockFixture {
 
   void expect_crypto_object_layer_exists_check(
           MockTestImageCtx* image_ctx, bool exists) {
-    EXPECT_CALL(*image_ctx->io_object_dispatcher, exists(
+    EXPECT_CALL(*image_ctx->io_object_dispatcher, jexists(
             io::OBJECT_DISPATCH_LAYER_CRYPTO)).WillOnce(Return(exists));
   }
 
