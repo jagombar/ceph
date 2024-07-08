@@ -48,7 +48,7 @@ RefreshRequest<I>::RefreshRequest(I &image_ctx, bool acquiring_lock,
 template <typename I>
 RefreshRequest<I>::~RefreshRequest() {
   // these require state machine to close
-  ceph_assert(m_exclusive_lock == nullptr);
+ // ceph_assert(m_exclusive_lock == nullptr);
   ceph_assert(m_object_map == nullptr);
   ceph_assert(m_journal == nullptr);
   ceph_assert(m_refresh_parent == nullptr);
@@ -1159,7 +1159,9 @@ Context *RefreshRequest<I>::send_v2_shut_down_exclusive_lock() {
   Context *ctx = create_context_callback<
     klass, &klass::handle_v2_shut_down_exclusive_lock>(this);
   m_exclusive_lock->shut_down(ctx);
-  return nullptr;
+
+  return send_v2_close_journal();
+  //return nullptr;
 }
 
 template <typename I>
@@ -1179,10 +1181,10 @@ Context *RefreshRequest<I>::handle_v2_shut_down_exclusive_lock(int *result) {
   }
 
   ceph_assert(m_exclusive_lock != nullptr);
-  m_exclusive_lock->put();
+  m_exclusive_lock->put(); // can't do this if exclusive lock layer is still registered
   m_exclusive_lock = nullptr;
-
-  return send_v2_close_journal();
+  return nullptr;
+//  return send_v2_close_journal();
 }
 
 template <typename I>

@@ -13,14 +13,16 @@ AsyncOpTracker::~AsyncOpTracker() {
   ceph_assert(m_pending_ops == 0);
 }
 
-void AsyncOpTracker::start_op() {
+uint32_t AsyncOpTracker::start_op() {
   std::lock_guard locker(m_lock);
   ++m_pending_ops;
+  return m_pending_ops;
 }
 
-void AsyncOpTracker::finish_op() {
+uint32_t AsyncOpTracker::finish_op() {
   Context *on_finish = nullptr;
   Context *on_finish_locked = nullptr;
+  uint32_t pending_ops = 0;
   {
     std::lock_guard locker(m_lock);
     ceph_assert(m_pending_ops > 0);
@@ -31,27 +33,32 @@ void AsyncOpTracker::finish_op() {
     if (on_finish_locked != nullptr) {
       on_finish_locked->complete(0);
     }
+    pending_ops = m_pending_ops;
   }
 
   if (on_finish != nullptr) {
     on_finish->complete(0);
   }
+  return pending_ops;
 }
 
-void AsyncOpTracker::wait_for_ops(Context *on_finish, Context *on_finish_locked) {
+uint32_t AsyncOpTracker::wait_for_ops(Context *on_finish, Context *on_finish_locked) {
+  uint32_t pending_ops;
   {
     std::lock_guard locker(m_lock);
     ceph_assert(m_on_finish == nullptr);
     if (m_pending_ops > 0) {
       m_on_finish = on_finish;
       m_on_finish_locked = on_finish_locked;
-      return;
+      return m_pending_ops;
     }
+    pending_ops = m_pending_ops;
     if (on_finish_locked != nullptr) {
       on_finish_locked->complete(0);
     }
   }
   on_finish->complete(0);
+  return pending_ops;
 }
 
 bool AsyncOpTracker::empty() {

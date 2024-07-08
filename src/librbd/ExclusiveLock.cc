@@ -365,12 +365,28 @@ void ExclusiveLock<I>::post_release_lock_handler(bool shutting_down, int r,
 
     on_finish = new LambdaContext([this, r, on_finish](int) {
         m_image_dispatch = nullptr;
-        m_image_ctx.image_watcher->notify_released_lock();
+        m_image_ctx.image_watcher->notify_released_lock(); // maybe this is the call that allows the refresh request to proceed?  check with the debugger.
         on_finish->complete(r);
-      });
+      });    
+
+//    Context *ctx = new LambdaContext([this](int) {
+//        m_image_dispatch = nullptr;
+//      });
+
+    // This next call may now complete asynchronosly because it may be necessary to wait for the dispatcher op_tracker to count down 
+    // For example if the exclusive lock layer is disabled whilst IO is in flight then the IO that discovers the change (it does a refresh) will 
+    // have been submitted at the top of the stack and that IO can't complete until the exclusive lock layer has been removed.
+    // The only indication that the exclusive lock layer has not completed its removal is that the m_image_dispatch reference is not yet null
+    // The lock will be in the SHUTDOWN state
     m_image_ctx.io_image_dispatcher->shut_down_dispatch(
       m_image_dispatch->get_dispatch_layer(), on_finish);
-  }
+  } 
+
+//  if (r >= 0) {
+//    m_image_ctx.image_watcher->notify_released_lock();
+//  }
+
+//  on_finish->complete(r); // ManagedLock::handle_shutdown_post_release() this is the call that allows the refresh request to proceed.
 }
 
 template <typename I>

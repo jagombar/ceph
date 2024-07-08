@@ -176,7 +176,7 @@ struct ImageDispatcher<I>::PreprocessVisitor
 
 template <typename I>
 ImageDispatcher<I>::ImageDispatcher(I* image_ctx)
-  : Dispatcher<I, ImageDispatcherInterface>(image_ctx) {
+  : Dispatcher<I, ImageDispatcherInterface>(image_ctx, true) {
   // configure the core image dispatch handler on startup
   auto image_dispatch = new ImageDispatch(image_ctx);
   this->register_dispatch(image_dispatch);

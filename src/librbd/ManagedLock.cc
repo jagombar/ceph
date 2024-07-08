@@ -762,7 +762,7 @@ void ManagedLock<I>::send_shutdown() {
   m_state = STATE_PRE_SHUTTING_DOWN;
 
   m_lock.unlock();
-  m_work_queue->queue(new C_ShutDownRelease(this), 0);
+  m_work_queue->queue(new C_ShutDownRelease(this), 0); // will call send_shutdown_release()
   m_lock.lock();
 }
 
@@ -814,6 +814,8 @@ template <typename I>
 void ManagedLock<I>::handle_shutdown_post_release(int r) {
   ldout(m_cct, 10) << "r=" << r << dendl;
 
+  ceph_assert(m_state == STATE_SHUTTING_DOWN);
+
   wait_for_tracked_ops(r);
 }
 
@@ -850,7 +852,7 @@ void ManagedLock<I>::complete_shutdown(int r) {
 
   // expect to be destroyed after firing callback
   for (auto ctx : action_contexts.second) {
-    ctx->complete(r);
+    ctx->complete(r);   // makes the callback that was given when the shutdown was requested.
   }
 }
 

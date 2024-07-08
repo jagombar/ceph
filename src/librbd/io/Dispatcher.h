@@ -31,9 +31,10 @@ public:
   typedef typename DispatchInterfaceT::DispatchLayer DispatchLayer;
   typedef typename DispatchInterfaceT::DispatchSpec DispatchSpec;
 
-  Dispatcher(ImageCtxT* image_ctx)
+  Dispatcher(ImageCtxT* image_ctx, bool is_image=false)
     : m_image_ctx(image_ctx),
       m_op_tracker(new AsyncOpTracker()) {
+        m_is_image = is_image;
   }
 
   virtual ~Dispatcher() {
@@ -80,8 +81,9 @@ public:
       ceph_assert(result.second);
     });
 
-    // Wait for IO to queisce then add layer
-    m_op_tracker->wait_for_ops(on_finish, on_quiesced_locked_ctx);
+    // Wait for IO to quiesce then add layer
+    uint32_t jj = m_op_tracker->wait_for_ops(on_finish, on_quiesced_locked_ctx);
+    ldout(cct, 5) << "waiting for count=" << jj << dendl;
 
     // Resume thread once layer has been added
     on_finish->wait();
@@ -108,15 +110,21 @@ public:
     ldout(cct, 5) << "dispatch_layer=" << dispatch_layer << dendl;
 
     // The dispatch shutdown method will be called from the AsyncOpTracker when quiesced with the lock held  
-    auto locked_ctx = new LambdaContext([this, dispatch_layer, on_finish]() {
+    auto locked_ctx = new LambdaContext([this, dispatch_layer, on_finish, cct]() {
+      ldout(cct, 5) << "callback.  dispatch_layer=" << dispatch_layer << dendl;
       this->shut_down_dispatch_whilst_quiesced(dispatch_layer, on_finish);
     });
 
-    m_op_tracker->wait_for_ops(on_finish, locked_ctx);
+    uint32_t jj = m_op_tracker->wait_for_ops(on_finish, locked_ctx);
+    ldout(cct, 5) << "waiting for count=" << jj << dendl;
   }
 
   void finished(DispatchSpec* dispatch_spec) {
-    m_op_tracker->finish_op();
+    auto cct = m_image_ctx->cct;
+    uint32_t cnt=m_op_tracker->finish_op();
+    ldout(cct, 20) << "dispatch_spec=" << dispatch_spec << " FINISH_OP:" << cnt << (m_is_image?" IMAGE":" OBJECT") << dendl;
+
+    // if cnt == 0 then see if exclusive lock needs shutting down
   }
 
   void send(DispatchSpec* dispatch_spec) {
@@ -127,7 +135,12 @@ public:
 
     // If this is the first time into the send function then record this in the overall op_tracker
     if (dispatch_spec->dispatch_result == DISPATCH_RESULT_INIT) {
-      m_op_tracker->start_op();
+      uint32_t cnt=m_op_tracker->start_op();
+      if((cnt==1) && m_is_image) {
+         ldout(cct, 20) << "jj dispatch_spec=" << dispatch_spec << " START_OP:" << cnt << (m_is_image?" IMAGE":" OBJECT") << dendl;
+
+      }
+      ldout(cct, 20) << "dispatch_spec=" << dispatch_spec << " START_OP:" << cnt << (m_is_image?" IMAGE":" OBJECT") << dendl;
     }
 
     // apply the IO request to all layers -- this method will be re-invoked
@@ -138,6 +151,7 @@ public:
       if (it == m_dispatches.end()) {
         // the request is complete if handled by all layers
         dispatch_spec->dispatch_result = DISPATCH_RESULT_COMPLETE;
+      ldout(cct, 20) << "dispatch_spec=" << dispatch_spec << " DONE_ALL_LAYERS" << (m_is_image?" IMAGE":" OBJECT")<< dendl;
         break;
       }
 
@@ -148,6 +162,7 @@ public:
       // advance to next layer in case we skip or continue
       dispatch_spec->dispatch_layer = dispatch->get_dispatch_layer();
 
+      ldout(cct, 20) << "about to call send_dispatch() dispatch_spec=" << dispatch_spec << (m_is_image?" IMAGE":" OBJECT") << dendl;
       bool handled = send_dispatch(dispatch, dispatch_spec);
       // This will end up in ImageDispatchSpec::C_Dispatcher::complete() where it will look at the dispatch_spec result.
       // If it is CONTINUE then it will call back into this function (for the next layer)
@@ -161,6 +176,8 @@ public:
 
       // handled ops will resume when the dispatch ctx is invoked
       if (handled) {
+        
+      ldout(cct, 20) << "dispatch_spec=" << dispatch_spec << " RETURN" << (m_is_image?" IMAGE":" OBJECT")<< dendl;
         return;  
         // layer is processing/already processed this request.  It will either complete the request or call back into this send method for the next layer
         // If it completes the request it will call ImageDispatchSpec::C_Dispatcher::complete()
@@ -169,6 +186,7 @@ public:
     }
 
     // skipped through to the last layer - call the C_Dispatcher.complete() function ourselves
+      ldout(cct, 20) << "dispatch_spec=" << dispatch_spec << " ABOUT_TO_COMPLETE" << (m_is_image?" IMAGE":" OBJECT")<< dendl;
     dispatch_spec->dispatcher_ctx.complete(0);
   }
 
@@ -185,6 +203,7 @@ protected:
 
   ImageCtxT* m_image_ctx;
   AsyncOpTracker* m_op_tracker = nullptr;
+  bool m_is_image = false;
 
   std::map<DispatchLayer, DispatchMeta> m_dispatches;
 
@@ -207,16 +226,22 @@ protected:
     // Called from Image/ObjectDispatcher::invalidate_cache and will also be called back asynchronously after a dispatcher has completed its work (invalidate cache)
     void complete(int r) override {
 
+    auto cct = dispatcher->m_image_ctx->cct;
+
       // If this is the first time into the complete function then record this in the op_tracker
       if (!counted) {
-        dispatcher->m_op_tracker->start_op();
+        //dispatcher->m_op_tracker->start_op();
+      uint32_t cnt=dispatcher->m_op_tracker->start_op();
+      ldout(cct, 20) << " START_OP2:" << cnt << (dispatcher->m_is_image?" IMAGE":" OBJECT") << dendl;
         counted = true;
       }
 
       while (true) {
         auto it = dispatcher->m_dispatches.upper_bound(dispatch_layer);
         if (it == dispatcher->m_dispatches.end()) {
-          dispatcher->m_op_tracker->finish_op();
+          //dispatcher->m_op_tracker->finish_op();
+      uint32_t cnt=dispatcher->m_op_tracker->finish_op();
+      ldout(cct, 20) << " FINISH_OP2:" << cnt << (dispatcher->m_is_image?" IMAGE":" OBJECT") << dendl;
           Context::complete(r); // this calls the finish() method below
           return;
         }

@@ -12,10 +12,10 @@ public:
   AsyncOpTracker();
   ~AsyncOpTracker();
 
-  void start_op();
-  void finish_op();
+  uint32_t start_op();
+  uint32_t finish_op();
 
-  void wait_for_ops(Context *on_finish, Context *on_finish_locked = nullptr);
+  uint32_t wait_for_ops(Context *on_finish, Context *on_finish_locked = nullptr);
 
   bool empty();
 

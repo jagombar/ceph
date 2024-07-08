@@ -126,7 +126,7 @@ struct ObjectDispatcher<I>::SendVisitor : public boost::static_visitor<bool> {
 
 template <typename I>
 ObjectDispatcher<I>::ObjectDispatcher(I* image_ctx)
-  : Dispatcher<I, ObjectDispatcherInterface>(image_ctx) {
+  : Dispatcher<I, ObjectDispatcherInterface>(image_ctx, false) {
   // configure the core object dispatch handler on startup
   auto object_dispatch = new ObjectDispatch(image_ctx);
   this->register_dispatch(object_dispatch);
