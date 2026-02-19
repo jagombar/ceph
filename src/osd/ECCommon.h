@@ -293,6 +293,7 @@ struct ECCommon {
         for_recovery(for_recovery),
         on_complete(std::move(_on_complete)),
         to_read(std::move(_to_read)),
+        // next line op is invalid
         otel_trace(tracing::osd::tracer.add_span("EC ReadOp", op->osd_trace)) {}
 
     ReadOp() = delete;

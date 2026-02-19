@@ -57,7 +57,7 @@ public:
     decode(pgid, p);
     decode(map_epoch, p);
     op.decode(p, d);
-    if (header.version >= 4) {
+    if (header.version >= 3) {
       decode(min_epoch, p);
       decode_otel_trace(p);
     } else if (header.version >= 2) {
